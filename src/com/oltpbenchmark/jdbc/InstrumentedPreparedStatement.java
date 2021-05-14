@@ -104,6 +104,9 @@ public class InstrumentedPreparedStatement {
         this.stmt.setTimestamp(parameterIndex, x);
     }
 
+    public void setObject(int idx, Object obj) throws SQLException {
+        stmt.setObject(idx, obj);
+    }
     public void addBatch() throws SQLException {
         this.stmt.addBatch();
     }
