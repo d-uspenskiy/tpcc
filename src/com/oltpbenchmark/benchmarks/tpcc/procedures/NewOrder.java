@@ -279,6 +279,10 @@ public class NewOrder extends Procedure {
     int customerID = TPCCUtil.getCustomerID(gen);
     int numItems = TPCCUtil.randomNumber(5, 15, gen);
     AtomicBoolean all_local = new AtomicBoolean(true);
+    // we need to cause 1% of the new orders to be rolled back.
+    // TODO -- in this case, lets make sure our retry/failure bookkeeping is smart enough to distinguish between this
+    // vs. unexpected failures.
+    AtomicBoolean invalid_item_required = new AtomicBoolean(TPCCUtil.randomNumber(1, 100, gen) == 1);
     OrderInfo order = new OrderInfo(conn, numItems, (builder) -> {
       int supplierWarehouseID = terminalWarehouseID;
       if (TPCCUtil.randomNumber(1, 100, gen) == 1) {
@@ -286,10 +290,7 @@ public class NewOrder extends Procedure {
           supplierWarehouseID = TPCCUtil.randomNumber(1, numWarehouses, gen);
         } while (supplierWarehouseID == terminalWarehouseID && numWarehouses > 1);
       }
-      // we need to cause 1% of the new orders to be rolled back.
-      // TODO -- in this case, lets make sure our retry/failure bookkeeping is smart enough to distinguish between this
-      // vs. unexpected failures.
-      int itemId = TPCCUtil.randomNumber(1, 100, gen) == 1 ? TPCCConfig.INVALID_ITEM_ID :  TPCCUtil.getItemID(gen);
+      int itemId = invalid_item_required.compareAndSet(true, false) ? TPCCConfig.INVALID_ITEM_ID : TPCCUtil.getItemID(gen);
       if (supplierWarehouseID != terminalWarehouseID) {
         all_local.set(false);
       }
