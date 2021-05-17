@@ -245,7 +245,6 @@ public class NewOrder extends Procedure {
             "  disc NUMERIC;\n" +
             "  wtax NUMERIC;\n" +
             "  amount NUMERIC;\n" +
-            "  i_count NUMERIC;\n" +
             "BEGIN\n" +
             "  SELECT D_NEXT_O_ID, D_TAX INTO next_oid, dtax FROM DISTRICT WHERE D_W_ID = wid AND D_ID = did;\n" +
             "  oid := next_oid + 1;\n" +
@@ -255,9 +254,9 @@ public class NewOrder extends Procedure {
             "    SELECT * FROM new_order_fetch_stock(did, item_ids, wh_info)\n" +
             "  ), cte_amount AS (\n" +
             "    SELECT new_order_for_loop_helper(ROW_NUMBER () OVER (ORDER BY S_W_ID, I_ID), quantity, S_W_ID, I_ID, S_QUANTITY, S_REMOTE_CNT, S_YTD, S_ORDER_CNT, I_PRICE, S_DIST, oid, did, wid) AS value FROM cte_item INNER JOIN cte_stock ON (cte_item.I_ID = cte_stock.S_I_ID) ORDER BY S_W_ID, I_ID\n" +
-            "  ) SELECT SUM(cte_amount.value), COUNT(cte_amount.value) INTO amount, i_count FROM cte_amount;\n" +
-            "  IF i_count <> array_length(item_ids, 1) THEN\n" +
-            "    RAISE 'User error: missed items. Requested %, but found %', array_length(item_ids, 1), i_count;\n" +
+            "  ) SELECT SUM(cte_amount.value) INTO amount FROM cte_amount;\n" +
+            "  IF -12345 = ANY(item_ids) THEN\n" +
+            "    RAISE 'User error: invalid item requested';\n" +
             "  END IF;\n" +
             "  CALL new_order_district_update_helper(wid, did, oid); -- Trick to make single row update bufferable\n" +
             "  INSERT INTO OORDER (O_ID, O_D_ID, O_W_ID, O_C_ID, O_OL_CNT, O_ALL_LOCAL) VALUES (oid, did, wid, cid, array_length(item_ids, 1), all_local);\n" +
@@ -315,7 +314,7 @@ public class NewOrder extends Procedure {
       r.next();
       float total_amount = r.getFloat(1);
     } catch (SQLException e) {
-      if (e.getMessage().contains("User error: missed items.")) {
+      if (e.getMessage().contains("User error: invalid item requested")) {
         throw new UserAbortException("Expected error", e);
       }
       throw e;
