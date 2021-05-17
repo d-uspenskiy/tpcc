@@ -122,7 +122,7 @@ public class NewOrder extends Procedure {
   }
 
   private static class Initializer {
-    private AtomicBoolean initDone = new AtomicBoolean(true);
+    private AtomicBoolean initDone = new AtomicBoolean(false);
 
     public void ensureInitialized(Connection conn) throws SQLException {
       if (!initDone.get()) {
@@ -193,54 +193,68 @@ public class NewOrder extends Procedure {
             "END; $$ LANGUAGE 'plpgsql';");
 
         stmt.execute(
-            "CREATE OR REPLACE FUNCTION new_order_impl_ex(wid INT, did INT, cid INT, item_ids int[], wh_info int[], quantity int[], all_local INT) RETURNS NUMERIC(6,2) AS $$\n" +
+            "CREATE OR REPLACE FUNCTION new_order_for_loop_helper(\n" +
+            "  idx BIGINT,\n" +
+            "  quantity INT[],\n" +
+            "  S_W_ID INT,\n" +
+            "  I_ID INT,\n" +
+            "  S_QUANTITY NUMERIC,\n" +
+            "  S_REMOTE_CNT INT,\n" +
+            "  S_YTD NUMERIC,\n" +
+            "  S_ORDER_CNT INT,\n" +
+            "  I_PRICE NUMERIC,\n" +
+            "  S_DIST VARCHAR,\n" +
+            "  oid INT,\n" +
+            "  did INT,\n" +
+            "  wid INT) RETURNS NUMERIC AS $$\n" +
             "DECLARE\n" +
-            "  r RECORD;\n" +
+            "  i_q INT;\n" +
+            "  s_q NUMERIC;\n" +
+            "  s_r_c INT;\n" +
+            "  i_a NUMERIC;\n" +
+            "BEGIN\n" +
+            "  -- RAISE NOTICE 'Row %, %, %, %', idx, S_W_ID, I_ID, S_QUANTITY;\n" +
+            "  i_q := quantity[idx];\n" +
+            "\n" +
+            "  s_q := S_QUANTITY - i_q;\n" +
+            "  IF s_q < 10\n" +
+            "  THEN\n" +
+            "    s_q := s_q + 91;\n" +
+            "  END IF;\n" +
+            "\n" +
+            "  s_r_c := S_REMOTE_CNT;\n" +
+            "  IF wid <> S_W_ID\n" +
+            "  THEN\n" +
+            "    s_r_c := s_r_c + 1;\n" +
+            "  END IF;\n" +
+            "  CALL new_order_stock_update_helper(I_ID, S_W_ID, s_q, S_YTD + i_q, s_r_c, S_ORDER_CNT + 1); -- Trick to make single row update bufferable\n" +
+            "\n" +
+            "  i_a := I_PRICE * i_q;\n" +
+            "  INSERT INTO ORDER_LINE\n" +
+            "    (OL_O_ID, OL_D_ID, OL_W_ID, OL_NUMBER, OL_I_ID, OL_SUPPLY_W_ID, OL_QUANTITY, OL_AMOUNT, OL_DIST_INFO)\n" +
+            "    VALUES (oid, did, wid, idx, I_ID, S_W_ID, i_q, i_a, S_DIST);\n" +
+            "  RETURN i_a;\n" +
+            "END; $$ LANGUAGE 'plpgsql';");
+
+        stmt.execute(
+            "CREATE OR REPLACE FUNCTION new_order_impl_ex(wid INT, did INT, cid INT, item_ids int[], wh_info int[], quantity int[], all_local INT) RETURNS NUMERIC AS $$\n" +
+            "DECLARE\n" +
             "  next_oid INT;\n" +
             "  oid INT;\n" +
-            "  dtax NUMERIC(4,4);\n" +
-            "  disc numeric(4,4);\n" +
-            "  wtax numeric(4,4);\n" +
-            "  amount numeric(6,2);\n" +
-            "  i_amount numeric(6,2);\n" +
-            "  i_quantity INT;\n" +
-            "  idx INT;\n" +
-            "  s_quantity numeric(4,0);\n" +
-            "  s_remote_cnt INT;\n" +
+            "  dtax NUMERIC;\n" +
+            "  disc NUMERIC;\n" +
+            "  wtax NUMERIC;\n" +
+            "  amount NUMERIC;\n" +
             "BEGIN\n" +
             "  SELECT D_NEXT_O_ID, D_TAX INTO next_oid, dtax FROM DISTRICT WHERE D_W_ID = wid AND D_ID = did;\n" +
             "  oid := next_oid + 1;\n" +
-            "  amount := 0;\n" +
-            "  idx := 1;\n" +
-            "  FOR r IN WITH cte_item AS (\n" +
-            "      SELECT i.I_ID, i.I_PRICE, i.I_NAME, i.I_DATA FROM ITEM AS i WHERE i.I_ID = ANY(item_ids)\n" +
-            "    ), cte_stock AS (\n" +
-            "      SELECT * FROM new_order_fetch_stock(did, item_ids, wh_info)\n" +
-            "    ) SELECT * FROM cte_item INNER JOIN cte_stock ON (cte_item.I_ID = cte_stock.S_I_ID) ORDER BY S_W_ID, I_ID\n" +
-            "  LOOP\n" +
-            "    -- RAISE NOTICE 'Row %, %, %, %', r.S_W_ID, r.I_ID, r.S_QUANTITY, r;\n" +
-            "    i_quantity := quantity[idx];\n" +
-            "\n" +
-            "    s_quantity := r.S_QUANTITY - i_quantity;\n" +
-            "    IF s_quantity < 10\n" +
-            "    THEN\n" +
-            "      s_quantity := s_quantity + 91;\n" +
-            "    END IF;\n" +
-            "\n" +
-            "    s_remote_cnt := r.S_REMOTE_CNT;\n" +
-            "    IF wid <> r.S_W_ID\n" +
-            "    THEN\n" +
-            "      s_remote_cnt := s_remote_cnt + 1;\n" +
-            "    END IF;\n" +
-            "    CALL new_order_stock_update_helper(r.I_ID, r.S_W_ID, s_quantity, r.S_YTD + i_quantity, s_remote_cnt, r.S_ORDER_CNT + 1); -- Trick to make single row update bufferable\n" +
-            "\n" +
-            "    i_amount := r.I_PRICE * i_quantity;\n" +
-            "    amount := amount + i_amount;\n" +
-            "    INSERT INTO ORDER_LINE\n" +
-            "      (OL_O_ID, OL_D_ID, OL_W_ID, OL_NUMBER, OL_I_ID, OL_SUPPLY_W_ID, OL_QUANTITY, OL_AMOUNT, OL_DIST_INFO)\n" +
-            "      VALUES (oid, did, wid, idx, r.I_ID, r.S_W_ID, i_quantity, i_amount, r.S_DIST);\n" +
-            "    idx := idx + 1;\n" +
-            "  END LOOP;\n" +
+            "  WITH cte_item AS (\n" +
+            "    SELECT i.I_ID, i.I_PRICE, i.I_NAME, i.I_DATA FROM ITEM AS i WHERE i.I_ID = ANY(item_ids)\n" +
+            "  ), cte_stock AS (\n" +
+            "    SELECT * FROM new_order_fetch_stock(did, item_ids, wh_info)\n" +
+            "  ), cte_amount AS (\n" +
+            "    SELECT new_order_for_loop_helper(ROW_NUMBER () OVER (ORDER BY S_W_ID, I_ID), quantity, S_W_ID, I_ID, S_QUANTITY, S_REMOTE_CNT, S_YTD, S_ORDER_CNT, I_PRICE, S_DIST, oid, did, wid) AS value FROM cte_item INNER JOIN cte_stock ON (cte_item.I_ID = cte_stock.S_I_ID) ORDER BY S_W_ID, I_ID\n" +
+            "  ) SELECT sum(cte_amount.value) INTO amount FROM cte_amount;\n" +
             "  CALL new_order_district_update_helper(wid, did, oid); -- Trick to make single row update bufferable\n" +
             "  INSERT INTO OORDER (O_ID, O_D_ID, O_W_ID, O_C_ID, O_OL_CNT, O_ALL_LOCAL) VALUES (oid, did, wid, cid, array_length(item_ids, 1), all_local);\n" +
             "  INSERT INTO NEW_ORDER (NO_O_ID, NO_D_ID, NO_W_ID) VALUES (oid, did, wid);\n" +
