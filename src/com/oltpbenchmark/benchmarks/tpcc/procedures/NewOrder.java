@@ -206,7 +206,10 @@ public class NewOrder extends Procedure {
             "  S_DIST VARCHAR,\n" +
             "  oid INT,\n" +
             "  did INT,\n" +
-            "  wid INT) RETURNS NUMERIC AS $$\n" +
+            "  wid INT,\n" +
+            "  cid INT,\n" +
+            "  ol_count INT,\n" +
+            "  all_local INT) RETURNS NUMERIC AS $$\n" +
             "DECLARE\n" +
             "  i_q INT;\n" +
             "  s_q NUMERIC;\n" +
@@ -214,6 +217,12 @@ public class NewOrder extends Procedure {
             "  i_a NUMERIC;\n" +
             "BEGIN\n" +
             "  -- RAISE NOTICE 'Row %, %, %, %', idx, S_W_ID, I_ID, S_QUANTITY;\n" +
+            "  IF idx = 1 THEN\n" +
+            "    -- Insert order itself before the first order line\n" +
+            "    INSERT INTO OORDER (O_ID, O_D_ID, O_W_ID, O_C_ID, O_OL_CNT, O_ALL_LOCAL) VALUES (oid, did, wid, cid, ol_count, all_local);\n" +
+            "    INSERT INTO NEW_ORDER (NO_O_ID, NO_D_ID, NO_W_ID) VALUES (oid, did, wid);\n" +
+            "  END IF;\n" +
+            "\n" +
             "  i_q := quantity[idx];\n" +
             "\n" +
             "  s_q := S_QUANTITY - i_q;\n" +
@@ -245,24 +254,23 @@ public class NewOrder extends Procedure {
             "  disc NUMERIC;\n" +
             "  wtax NUMERIC;\n" +
             "  amount NUMERIC;\n" +
+            "  stock_count INT;\n" +
             "BEGIN\n" +
             "  SELECT D_NEXT_O_ID, D_TAX INTO next_oid, dtax FROM DISTRICT WHERE D_W_ID = wid AND D_ID = did;\n" +
             "  oid := next_oid + 1;\n" +
+            "  SELECT W_TAX INTO wtax FROM WAREHOUSE WHERE W_ID = wid;\n" +
+            "  SELECT C_DISCOUNT INTO disc FROM CUSTOMER WHERE C_W_ID = wid AND C_D_ID = did AND C_ID = cid FOR KEY SHARE;\n" +
             "  WITH cte_item AS (\n" +
             "    SELECT i.I_ID, i.I_PRICE, i.I_NAME, i.I_DATA FROM ITEM AS i WHERE i.I_ID = ANY(item_ids)\n" +
             "  ), cte_stock AS (\n" +
             "    SELECT * FROM new_order_fetch_stock(did, item_ids, wh_info)\n" +
             "  ), cte_amount AS (\n" +
-            "    SELECT new_order_for_loop_helper(ROW_NUMBER () OVER (ORDER BY S_W_ID, I_ID), quantity, S_W_ID, I_ID, S_QUANTITY, S_REMOTE_CNT, S_YTD, S_ORDER_CNT, I_PRICE, S_DIST, oid, did, wid) AS value FROM cte_item INNER JOIN cte_stock ON (cte_item.I_ID = cte_stock.S_I_ID) ORDER BY S_W_ID, I_ID\n" +
-            "  ) SELECT SUM(cte_amount.value) INTO amount FROM cte_amount;\n" +
-            "  IF -12345 = ANY(item_ids) THEN\n" +
-            "    RAISE 'User error: invalid item requested';\n" +
+            "    SELECT new_order_for_loop_helper(ROW_NUMBER () OVER (ORDER BY S_W_ID, I_ID), quantity, S_W_ID, I_ID, S_QUANTITY, S_REMOTE_CNT, S_YTD, S_ORDER_CNT, I_PRICE, S_DIST, oid, did, wid, cid, array_length(item_ids, 1), all_local) AS value FROM cte_item INNER JOIN cte_stock ON (cte_item.I_ID = cte_stock.S_I_ID) ORDER BY S_W_ID, I_ID\n" +
+            "  ) SELECT SUM(cte_amount.value), COUNT(*) INTO amount, stock_count FROM cte_amount;\n" +
+            "  IF stock_count <> array_length(item_ids, 1) THEN\n" +
+            "    RAISE 'User error: Failed to find some items';\n" +
             "  END IF;\n" +
             "  CALL new_order_district_update_helper(wid, did, oid); -- Trick to make single row update bufferable\n" +
-            "  INSERT INTO OORDER (O_ID, O_D_ID, O_W_ID, O_C_ID, O_OL_CNT, O_ALL_LOCAL) VALUES (oid, did, wid, cid, array_length(item_ids, 1), all_local);\n" +
-            "  INSERT INTO NEW_ORDER (NO_O_ID, NO_D_ID, NO_W_ID) VALUES (oid, did, wid);\n" +
-            "  SELECT C_DISCOUNT INTO disc FROM CUSTOMER WHERE C_W_ID = wid AND C_D_ID = did AND C_ID = cid;\n" +
-            "  SELECT W_TAX INTO wtax FROM WAREHOUSE WHERE W_ID = wid;\n" +
             "  RETURN amount * (1 + wtax + dtax) * (1 - disc);\n" +
             "END; $$ LANGUAGE 'plpgsql';");
       }
@@ -315,7 +323,7 @@ public class NewOrder extends Procedure {
       r.next();
       float total_amount = r.getFloat(1);
     } catch (SQLException e) {
-      if (e.getMessage().contains("User error: invalid item requested")) {
+      if (e.getMessage().contains("User error: Failed to find some items")) {
         throw new UserAbortException("Expected error", e);
       }
       throw e;
