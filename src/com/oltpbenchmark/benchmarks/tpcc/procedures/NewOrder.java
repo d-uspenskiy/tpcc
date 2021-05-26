@@ -189,7 +189,7 @@ public class NewOrder extends Procedure {
             "      SELECT i AS w_idx, i + 1 AS s_idx, i + 2 AS e_idx FROM generate_series(1, array_length(wh_info, 1), 3) AS i\n" +
             "    ) AS g INNER JOIN stock AS s ON (wh_info[g.w_idx] = s.S_W_ID)\n" +
             "    WHERE\n" +
-            "      s.S_I_ID = ANY(item_ids[wh_info[g.s_idx]:wh_info[g.e_idx]]);\n" +
+            "      s.S_I_ID = ANY(item_ids[wh_info[g.s_idx]:wh_info[g.e_idx]])\n" +
             "    FOR KEY SHARE OF s;\n" +
             "END; $$ LANGUAGE 'plpgsql';");
 
