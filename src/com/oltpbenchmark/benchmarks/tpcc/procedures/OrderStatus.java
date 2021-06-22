@@ -89,7 +89,7 @@ public class OrderStatus extends Procedure {
                   int terminalDistrictLowerID, int terminalDistrictUpperID,
                   Worker w) throws SQLException {
     boolean trace = LOG.isTraceEnabled();
-
+    conn.setAutoCommit(false);
     // initializing all prepared statements
     payGetCust = this.getPreparedStatement(conn, payGetCustSQL);
     customerByName = this.getPreparedStatement(conn, customerByNameSQL);

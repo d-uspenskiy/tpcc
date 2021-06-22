@@ -492,11 +492,7 @@ public class Worker implements Runnable {
             startConnection = System.nanoTime();
 
             conn = dataSource.getConnection();
-            if (next.getProcedureClass() != StockLevel.class) {
-                // In accordance with 2.8.2.3 of the TPCC spec, StockLevel should execute each query in its own Snapshot
-                // Isolation.
-                conn.setAutoCommit(false);
-            }
+            conn.setAutoCommit(true);
 
             if (LOG.isDebugEnabled() && conn.getTransactionIsolation() != wrkld.getIsolationMode()) {
                 throw new RuntimeException(String.format(
@@ -524,9 +520,6 @@ public class Worker implements Runnable {
                 // User Abort Handling
                 // These are not errors
                 } catch (UserAbortException ex) {
-                    if (!conn.getAutoCommit()) {
-                        conn.rollback();
-                    }
                     status = TransactionStatus.USER_ABORTED;
                     break;
                 // Database System Specific Exception Handling
@@ -535,10 +528,6 @@ public class Worker implements Runnable {
                                            "[Message='%s', ErrorCode='%d', SQLState='%s']",
                                            ex.getClass().getSimpleName(), next, this.toString(),
                                            ex.getMessage(), ex.getErrorCode(), ex.getSQLState()), ex);
-
-                    if (!conn.getAutoCommit()) {
-                        conn.rollback();
-                    }
 
                     if (ex.getSQLState() != null) {
                         if (ex.getErrorCode() == 0 && ex.getSQLState() != null && ex.getSQLState().equals("40001")) {
@@ -619,9 +608,6 @@ public class Worker implements Runnable {
         //fail gracefully
         LOG.error("We have been invoked with an INVALID transactionType?!");
         throw new RuntimeException("Bad transaction type = "+ nextTransaction);
-      }
-      if (!conn.getAutoCommit()) {
-        conn.commit();
       }
       return (TransactionStatus.SUCCESS);
     }

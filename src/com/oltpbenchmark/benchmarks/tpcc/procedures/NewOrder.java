@@ -24,6 +24,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 import com.oltpbenchmark.api.InstrumentedSQLStmt;
@@ -42,14 +43,17 @@ public class NewOrder extends Procedure {
 
   private static final Initializer initializer = new Initializer();
 
-  public static final InstrumentedSQLStmt stmtNewOrderImplSQL = new InstrumentedSQLStmt(
+  private static final InstrumentedSQLStmt stmtNewOrderImplSQL = new InstrumentedSQLStmt(
       "SELECT * FROM new_order_impl_ex(?, ?, ?, ?, ?, ?, ?)");
 
   private InstrumentedPreparedStatement stmtNewOrderImpl = null;
 
+  private static final AtomicLong badItemsCount = new AtomicLong(0);
+
   public static void printLatencyStats() {
     LOG.info("NewOrder : ");
     LOG.info("latency NewOrderImpl " + stmtNewOrderImplSQL.getStats());
+    LOG.info("badItemsCount " + badItemsCount.get());
   }
 
   private static class OrderInfo {
@@ -122,7 +126,7 @@ public class NewOrder extends Procedure {
   }
 
   private static class Initializer {
-    private AtomicBoolean initDone = new AtomicBoolean(false);
+    private AtomicBoolean initDone = new AtomicBoolean(true);
 
     public void ensureInitialized(Connection conn) throws SQLException {
       if (!initDone.get()) {
@@ -153,7 +157,7 @@ public class NewOrder extends Procedure {
             "$$ LANGUAGE sql;");
 
         stmt.execute(
-            "CREATE OR REPLACE FUNCTION new_order_fetch_stock(did INT, item_ids int[], wh_info int[]) RETURNS TABLE(\n" +
+            "CREATE OR REPLACE FUNCTION new_order_fetch_stock(did INT, item_ids INT[], wh_info INT[], actual_count INT) RETURNS TABLE(\n" +
             "  S_I_ID INT,\n" +
             "  S_W_ID INT,\n" +
             "  S_QUANTITY NUMERIC,\n" +
@@ -163,6 +167,10 @@ public class NewOrder extends Procedure {
             "  S_ORDER_CNT INT,\n" +
             "  S_DIST VARCHAR) AS $$\n" +
             "BEGIN\n" +
+            "  IF actual_count <> array_length(item_ids, 1) THEN\n" +
+            "    RAISE 'User error: Failed to find some items';\n" +
+            "  END IF;\n" +
+            "\n" +
             "  RETURN QUERY\n" +
             "    SELECT s.S_I_ID,\n" +
             "           s.S_W_ID,\n" +
@@ -190,7 +198,7 @@ public class NewOrder extends Procedure {
             "    ) AS g INNER JOIN stock AS s ON (wh_info[g.w_idx] = s.S_W_ID)\n" +
             "    WHERE\n" +
             "      s.S_I_ID = ANY(item_ids[wh_info[g.s_idx]:wh_info[g.e_idx]])\n" +
-            "    FOR KEY SHARE OF s;\n" +
+            "    FOR NO KEY UPDATE OF s;\n" +
             "END; $$ LANGUAGE 'plpgsql';");
 
         stmt.execute(
@@ -255,23 +263,19 @@ public class NewOrder extends Procedure {
             "  disc NUMERIC;\n" +
             "  wtax NUMERIC;\n" +
             "  amount NUMERIC;\n" +
-            "  stock_count INT;\n" +
             "BEGIN\n" +
             "  SELECT D_NEXT_O_ID, D_TAX INTO next_oid, dtax FROM DISTRICT WHERE D_W_ID = wid AND D_ID = did;\n" +
-            "  oid := next_oid + 1;\n" +
+            "  oid := next_oid;\n" +
             "  SELECT W_TAX INTO wtax FROM WAREHOUSE WHERE W_ID = wid;\n" +
             "  SELECT C_DISCOUNT INTO disc FROM CUSTOMER WHERE C_W_ID = wid AND C_D_ID = did AND C_ID = cid FOR KEY SHARE;\n" +
             "  WITH cte_item AS (\n" +
             "    SELECT i.I_ID, i.I_PRICE, i.I_NAME, i.I_DATA FROM ITEM AS i WHERE i.I_ID = ANY(item_ids)\n" +
             "  ), cte_stock AS (\n" +
-            "    SELECT * FROM new_order_fetch_stock(did, item_ids, wh_info)\n" +
+            "    SELECT * FROM new_order_fetch_stock(did, item_ids, wh_info, array_length(array(SELECT cte_item.I_ID FROM cte_item), 1))\n" +
             "  ), cte_amount AS (\n" +
             "    SELECT new_order_for_loop_helper(ROW_NUMBER () OVER (ORDER BY S_W_ID, I_ID), quantity, S_W_ID, I_ID, S_QUANTITY, S_REMOTE_CNT, S_YTD, S_ORDER_CNT, I_PRICE, S_DIST, oid, did, wid, cid, array_length(item_ids, 1), all_local) AS value FROM cte_item INNER JOIN cte_stock ON (cte_item.I_ID = cte_stock.S_I_ID) ORDER BY S_W_ID, I_ID\n" +
-            "  ) SELECT SUM(cte_amount.value), COUNT(*) INTO amount, stock_count FROM cte_amount;\n" +
-            "  IF stock_count <> array_length(item_ids, 1) THEN\n" +
-            "    RAISE 'User error: Failed to find some items';\n" +
-            "  END IF;\n" +
-            "  CALL new_order_district_update_helper(wid, did, oid); -- Trick to make single row update bufferable\n" +
+            "  ) SELECT SUM(cte_amount.value) INTO amount FROM cte_amount;\n" +
+            "  CALL new_order_district_update_helper(wid, did, oid + 1); -- Trick to make single row update bufferable\n" +
             "  RETURN amount * (1 + wtax + dtax) * (1 - disc);\n" +
             "END; $$ LANGUAGE 'plpgsql';");
       }
@@ -299,7 +303,11 @@ public class NewOrder extends Procedure {
           supplierWarehouseID = TPCCUtil.randomNumber(1, numWarehouses, gen);
         } while (supplierWarehouseID == terminalWarehouseID && numWarehouses > 1);
       }
-      int itemId = invalid_item_required.compareAndSet(true, false) ? TPCCConfig.INVALID_ITEM_ID : TPCCUtil.getItemID(gen);
+      int itemId = TPCCUtil.getItemID(gen);
+      if (invalid_item_required.compareAndSet(true, false)) {
+        itemId = TPCCConfig.INVALID_ITEM_ID;
+        badItemsCount.incrementAndGet();
+      }
       if (supplierWarehouseID != terminalWarehouseID) {
         all_local.set(false);
       }

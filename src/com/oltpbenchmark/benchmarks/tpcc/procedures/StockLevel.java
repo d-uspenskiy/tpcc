@@ -83,6 +83,7 @@ public class StockLevel extends Procedure {
                   int terminalDistrictLowerID, int terminalDistrictUpperID,
                   Worker w) throws SQLException {
     boolean trace = LOG.isTraceEnabled();
+    conn.setAutoCommit(false);
     stockGetDistOrderId = this.getPreparedStatement(conn, stockGetDistOrderIdSQL);
     stockGetCountStockFunc = new InstrumentedPreparedStatement(conn.prepareCall(stockGetCountStockSQL.getSqlStmt().getSQL()),
                                                                stockGetCountStockFuncLatency);
@@ -125,7 +126,7 @@ public class StockLevel extends Procedure {
     if (trace) LOG.trace("stockGetCountStock RESULT=" + stock_count);
 
     rs.close();
-
+    conn.commit();
     if (trace) {
       String terminalMessage = "\n+-------------------------- STOCK-LEVEL --------------------------+" +
               "\n Warehouse: " +

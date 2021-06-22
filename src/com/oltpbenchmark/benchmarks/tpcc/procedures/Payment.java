@@ -48,7 +48,7 @@ public class Payment extends Procedure {
   private InstrumentedPreparedStatement stmtPaymentImplName = null;
 
   private static class Initializer {
-    private AtomicBoolean initDone = new AtomicBoolean(false);
+    private AtomicBoolean initDone = new AtomicBoolean(true);
 
     public void ensureInitialized(Connection conn) throws SQLException {
       if (!initDone.get()) {

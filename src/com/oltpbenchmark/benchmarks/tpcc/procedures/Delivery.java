@@ -108,7 +108,7 @@ public class Delivery extends Procedure {
                   int w_id, int numWarehouses,
                   int terminalDistrictLowerID, int terminalDistrictUpperID,
                   Worker w) throws SQLException {
-
+    conn.setAutoCommit(false);
     boolean trace = LOG.isDebugEnabled();
     int o_carrier_id = TPCCUtil.randomNumber(1, 10, gen);
     Timestamp timestamp = w.getBenchmarkModule().getTimestamp(System.currentTimeMillis());
